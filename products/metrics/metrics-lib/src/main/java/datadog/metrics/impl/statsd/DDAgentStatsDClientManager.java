@@ -8,6 +8,7 @@ import datadog.trace.api.Config;
 import datadog.trace.api.ProcessTags;
 import datadog.trace.api.cache.DDCache;
 import datadog.trace.api.cache.DDCaches;
+import datadog.trace.api.crac.CracHooks;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -16,7 +17,25 @@ import java.util.function.Function;
 public final class DDAgentStatsDClientManager implements StatsDClientManager {
   private static final DDAgentStatsDClientManager INSTANCE = new DDAgentStatsDClientManager();
 
-  private DDAgentStatsDClientManager() {}
+  private DDAgentStatsDClientManager() {
+    CracHooks.register(
+        CracHooks.Phase.IDENTITY,
+        new CracHooks.Hook() {
+          @Override
+          public void beforeCheckpoint() {
+            for (DDAgentStatsDConnection connection : connectionPool.values()) {
+              connection.beforeCheckpoint();
+            }
+          }
+
+          @Override
+          public void afterRestore() {
+            for (DDAgentStatsDConnection connection : connectionPool.values()) {
+              connection.afterRestore();
+            }
+          }
+        });
+  }
 
   private static final boolean USE_LOGGING_CLIENT =
       LOGGING_WRITER_TYPE.equals(Config.get().getWriterType());
@@ -50,12 +69,21 @@ public final class DDAgentStatsDClientManager implements StatsDClientManager {
       final String[] constantTags,
       final boolean useAggregation) {
     Function<String, String> nameMapping = Function.identity();
-    Function<String[], String[]> tagMapping = Function.identity();
-
     if (null != namespace) {
       nameMapping = new NameResolver(namespace);
     }
+    Function<String[], String[]> tagMapping = tagMapping(constantTags);
 
+    if (USE_LOGGING_CLIENT) {
+      return new LoggingStatsDClient(nameMapping, tagMapping);
+    } else {
+      return new DDAgentStatsDClient(
+          getConnection(host, port, namedPipe, useAggregation), nameMapping, tagMapping);
+    }
+  }
+
+  /** Constant tags plus process tags, pre-packed; also used to retag a client after a restore. */
+  static Function<String[], String[]> tagMapping(final String[] constantTags) {
     final List<String> processTags = ProcessTags.getTagsAsStringList();
     final int processTagSize = processTags != null ? processTags.size() : 0;
     String[] finalConstantTags = constantTags;
@@ -79,15 +107,9 @@ public final class DDAgentStatsDClientManager implements StatsDClientManager {
     }
 
     if (null != finalConstantTags && finalConstantTags.length > 0) {
-      tagMapping = new TagCombiner(finalConstantTags);
+      return new TagCombiner(finalConstantTags);
     }
-
-    if (USE_LOGGING_CLIENT) {
-      return new LoggingStatsDClient(nameMapping, tagMapping);
-    } else {
-      return new DDAgentStatsDClient(
-          getConnection(host, port, namedPipe, useAggregation), nameMapping, tagMapping);
-    }
+    return Function.identity();
   }
 
   private DDAgentStatsDConnection getConnection(

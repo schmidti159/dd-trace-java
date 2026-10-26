@@ -114,6 +114,7 @@ import datadog.trace.core.servicediscovery.ServiceDiscovery;
 import datadog.trace.core.servicediscovery.ServiceDiscoveryFactory;
 import datadog.trace.core.taginterceptor.RuleFlags;
 import datadog.trace.core.taginterceptor.TagInterceptor;
+import datadog.trace.core.tagprocessor.TagsPostProcessorFactory;
 import datadog.trace.core.traceinterceptor.LatencyTraceInterceptor;
 import datadog.trace.lambda.LambdaAppSecHandler;
 import datadog.trace.lambda.LambdaHandler;
@@ -194,7 +195,8 @@ public class CoreTracer implements AgentTracer.TracerAPI, TracerFlare.Reporter {
   volatile MetricsAggregator metricsAggregator;
 
   /** Initial static configuration associated with the tracer. */
-  final Config initialConfig;
+  // Not final: replaced after a CRaC restore, see afterRestore()
+  volatile Config initialConfig;
 
   /** Maintains dynamic configuration associated with the tracer */
   private final DynamicConfig<ConfigSnapshot> dynamicConfig;
@@ -222,9 +224,14 @@ public class CoreTracer implements AgentTracer.TracerAPI, TracerFlare.Reporter {
   private final boolean apmTracingEnabled;
 
   /** A set of tags that are added to every span */
-  private final TagMap defaultSpanTags;
+  private volatile TagMap defaultSpanTags;
 
-  private final boolean defaultSpanTagsNeedsIntercept;
+  private volatile boolean defaultSpanTagsNeedsIntercept;
+
+  /** Incremented after a CRaC restore so the next config snapshot rebuilds its tracer tags. */
+  private volatile int identityGeneration;
+
+  private volatile ServiceDiscovery serviceDiscovery;
 
   /** number of spans in a pending trace before they get flushed */
   private final int partialFlushMinSpans;
@@ -954,6 +961,7 @@ public class CoreTracer implements AgentTracer.TracerAPI, TracerFlare.Reporter {
           .schedule(
               () -> {
                 final ServiceDiscovery serviceDiscovery = serviceDiscoveryFactory.get();
+                this.serviceDiscovery = serviceDiscovery;
                 if (serviceDiscovery != null) {
                   // JNA can do ldconfig and other commands. Those are hidden since internal.
                   try (final TraceScope blackhole = muteTracing()) {
@@ -976,6 +984,47 @@ public class CoreTracer implements AgentTracer.TracerAPI, TracerFlare.Reporter {
     TagMap frozenTags = tags.freeze();
     this.localRootSpanTags =
         new LocalRootSpanTags(frozenTags, this.tagInterceptor.needsIntercept(frozenTags));
+  }
+
+  /**
+   * Sends the pending traces and client-side stats before a CRaC checkpoint, so no restored JVM
+   * sends them again.
+   */
+  public void beforeCheckpoint() {
+    flush();
+    flushMetrics();
+  }
+
+  /**
+   * Re-reads the process identity after a CRaC restore: env and tags for every span, runtime id
+   * and PID for root spans, version for {@code InternalTagsAdder}.
+   */
+  public void afterRestore(Config config) {
+    this.initialConfig = config;
+    final TagMap defaults = withTracerTags(config.getMergedSpanTags(), config, null).immutableCopy();
+    this.defaultSpanTagsNeedsIntercept = this.tagInterceptor.needsIntercept(defaults);
+    this.defaultSpanTags = defaults;
+
+    final TagMap rootTags = TagMap.fromMap(config.getLocalRootSpanTags());
+    final Object engine = this.localRootSpanTags.tags.getObject(PROFILING_CONTEXT_ENGINE);
+    if (engine != null) {
+      rootTags.put(PROFILING_CONTEXT_ENGINE, engine);
+    }
+    final TagMap frozenRootTags = rootTags.freeze();
+    this.localRootSpanTags =
+        new LocalRootSpanTags(frozenRootTags, this.tagInterceptor.needsIntercept(frozenRootTags));
+
+    TagsPostProcessorFactory.rebuild();
+
+    this.identityGeneration++;
+    dynamicConfig.initial().setTracingTags(config.getMergedSpanTags()).applyAsInitial();
+
+    final ServiceDiscovery serviceDiscovery = this.serviceDiscovery;
+    if (serviceDiscovery != null) {
+      try (final TraceScope blackhole = muteTracing()) {
+        serviceDiscovery.writeTracerMetadata(config);
+      }
+    }
   }
 
   private void startMetricsAggregation(Config config, SharedCommunicationObjects sco) {
@@ -2592,6 +2641,7 @@ public class CoreTracer implements AgentTracer.TracerAPI, TracerFlare.Reporter {
 
     final TagMap mergedTracerTags;
     final boolean mergedTracerTagsNeedsIntercept;
+    final int identityGeneration = CoreTracer.this.identityGeneration;
 
     protected ConfigSnapshot(
         DynamicConfig<ConfigSnapshot>.Builder builder, ConfigSnapshot oldSnapshot) {
@@ -2610,7 +2660,8 @@ public class CoreTracer implements AgentTracer.TracerAPI, TracerFlare.Reporter {
       if (null == oldSnapshot) {
         mergedTracerTags = CoreTracer.this.defaultSpanTags.immutableCopy();
         this.mergedTracerTagsNeedsIntercept = CoreTracer.this.defaultSpanTagsNeedsIntercept;
-      } else if (getTracingTags().equals(oldSnapshot.getTracingTags())) {
+      } else if (getTracingTags().equals(oldSnapshot.getTracingTags())
+          && identityGeneration == oldSnapshot.identityGeneration) {
         mergedTracerTags = oldSnapshot.mergedTracerTags;
         mergedTracerTagsNeedsIntercept = oldSnapshot.mergedTracerTagsNeedsIntercept;
       } else {

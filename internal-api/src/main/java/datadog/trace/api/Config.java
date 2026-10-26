@@ -880,8 +880,9 @@ public class Config {
    * and every JMX metric that is sent out.
    */
   static class RuntimeIdHolder {
-    static final String runtimeId = RandomUtils.randomUUID().toString();
-    static final String rootSessionId = initRootSessionId();
+    // Not final: a CRaC restore is a new runtime, see reloadAfterRestore()
+    static volatile String runtimeId = RandomUtils.randomUUID().toString();
+    static volatile String rootSessionId = initRootSessionId();
 
     private static String initRootSessionId() {
       String inherited = ConfigHelper.env("_DD_ROOT_JAVA_SESSION_ID");
@@ -890,7 +891,7 @@ public class Config {
   }
 
   static class HostNameHolder {
-    static final String hostName = initHostName();
+    static volatile String hostName = initHostName();
 
     public static String getHostName() {
       return hostName;
@@ -6606,7 +6607,8 @@ public class Config {
   }
 
   // This has to be placed after all other static fields to give them a chance to initialize
-  private static final Config INSTANCE =
+  // Not final: replaced after a CRaC restore, see reloadAfterRestore()
+  private static volatile Config INSTANCE =
       new Config(
           Platform.isNativeImageBuilder()
               ? ConfigProvider.withoutCollector()
@@ -6615,6 +6617,21 @@ public class Config {
 
   public static Config get() {
     return INSTANCE;
+  }
+
+  /**
+   * Rebuilds the configuration and the process identity after a CRaC restore: the restored JVM
+   * runs in a new process with a new environment (env, version, tags, host), so it gets a new
+   * runtime id, PID and host name. Components that copied values out of the old instance must
+   * re-read them; they do so in their own {@code CracHooks} hooks.
+   */
+  public static synchronized void reloadAfterRestore() {
+    ConfigProvider.reloadAfterRestore();
+    PidHelper.reloadAfterRestore();
+    RuntimeIdHolder.runtimeId = RandomUtils.randomUUID().toString();
+    RuntimeIdHolder.rootSessionId = RuntimeIdHolder.initRootSessionId();
+    INSTANCE = new Config(ConfigProvider.getInstance(), InstrumenterConfig.get());
+    HostNameHolder.hostName = initHostName();
   }
 
   public static boolean isExplicitlyDisabled(String booleanKey) {

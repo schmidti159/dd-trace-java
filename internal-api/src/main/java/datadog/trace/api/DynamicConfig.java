@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import org.slf4j.Logger;
@@ -230,6 +231,29 @@ public final class DynamicConfig<S extends DynamicConfig.Snapshot> {
         String preferredServiceName, CharSequence source) {
       this.preferredServiceNameAndSource = Pair.of(preferredServiceName, source);
       return this;
+    }
+
+    /**
+     * Replaces the initial configuration, e.g. after a CRaC restore changed the static
+     * configuration it is built from. Remote overrides in the current configuration are kept; it
+     * takes the new tracing tags unless the overrides replaced them too.
+     */
+    public DynamicConfig<S> applyAsInitial() {
+      S oldInitial = initialSnapshot;
+      S oldCurrent = currentSnapshot;
+      S newInitial = snapshotFactory.apply(this, oldCurrent);
+      initialSnapshot = newInitial;
+      if (oldCurrent == oldInitial) {
+        currentSnapshot = newInitial;
+      } else {
+        Builder overrides = new Builder(oldCurrent);
+        if (Objects.equals(oldCurrent.tracingTags, oldInitial.tracingTags)) {
+          overrides.tracingTags = newInitial.tracingTags;
+        }
+        currentSnapshot = snapshotFactory.apply(overrides, oldCurrent);
+      }
+      reportConfigChange(currentSnapshot);
+      return DynamicConfig.this;
     }
 
     /** Overwrites the current configuration with a new snapshot. */

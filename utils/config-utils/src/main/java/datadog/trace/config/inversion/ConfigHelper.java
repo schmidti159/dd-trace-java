@@ -72,8 +72,8 @@ public class ConfigHelper {
     configSource = testSource;
   }
 
-  /** Resetting config cache. Useful for cleaning up after tests. */
-  void resetCache() {
+  /** Resetting config cache. Useful for cleaning up after tests, and after a CRaC restore. */
+  public void resetCache() {
     configs = Collections.emptyMap();
   }
 

@@ -9,6 +9,7 @@ import datadog.communication.serialization.msgpack.MsgPackWriter;
 import datadog.trace.api.Config;
 import datadog.trace.api.ProcessTags;
 import datadog.trace.api.WellKnownTags;
+import datadog.trace.api.crac.CracHooks;
 import datadog.trace.api.datastreams.DataStreamsTags;
 import datadog.trace.api.datastreams.KafkaConfigReport;
 import datadog.trace.api.datastreams.TransactionInfo;
@@ -67,9 +68,9 @@ public class MsgPackDatastreamsPayloadWriter implements DatastreamsPayloadWriter
   private final WritableFormatter writer;
   private final Sink sink;
   private final GrowableBuffer buffer;
-  private final WellKnownTags wellKnownTags;
+  private volatile WellKnownTags wellKnownTags;
   private final byte[] tracerVersionValue;
-  private final byte[] primaryTagValue;
+  private volatile byte[] primaryTagValue;
 
   public MsgPackDatastreamsPayloadWriter(
       Sink sink, WellKnownTags wellKnownTags, String tracerVersion, String primaryTag) {
@@ -78,7 +79,19 @@ public class MsgPackDatastreamsPayloadWriter implements DatastreamsPayloadWriter
     this.sink = sink;
     this.wellKnownTags = wellKnownTags;
     tracerVersionValue = tracerVersion.getBytes(ISO_8859_1);
-    primaryTagValue = primaryTag == null ? new byte[0] : primaryTag.getBytes(ISO_8859_1);
+    primaryTagValue = primaryTagBytes(primaryTag);
+    CracHooks.registerAfterRestore(
+        CracHooks.Phase.COMPONENT,
+        this,
+        w -> {
+          Config config = Config.get();
+          w.wellKnownTags = config.getWellKnownTags();
+          w.primaryTagValue = primaryTagBytes(config.getPrimaryTag());
+        });
+  }
+
+  private static byte[] primaryTagBytes(String primaryTag) {
+    return primaryTag == null ? new byte[0] : primaryTag.getBytes(ISO_8859_1);
   }
 
   public void reset() {

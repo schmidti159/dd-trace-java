@@ -24,6 +24,18 @@ public abstract class IdGenerationStrategy {
 
   protected final boolean traceId128BitGenerationEnabled;
 
+  /**
+   * Mixed into the RANDOM ids after a CRaC restore. {@link ThreadLocalRandom} state is part of the
+   * checkpoint image, so every JVM restored from the same image would otherwise generate the same
+   * id sequence.
+   */
+  private static volatile long restoreSalt;
+
+  /** Called after a CRaC restore with a value from a source the restore re-seeds. */
+  public static void reseedAfterRestore(long salt) {
+    restoreSalt = salt & MAX_VALUE;
+  }
+
   private IdGenerationStrategy(boolean traceId128BitGenerationEnabled) {
     this.traceId128BitGenerationEnabled = traceId128BitGenerationEnabled;
   }
@@ -69,7 +81,15 @@ public abstract class IdGenerationStrategy {
 
     @Override
     protected long getNonZeroPositiveLong() {
-      return ThreadLocalRandom.current().nextLong(0, MAX_VALUE) + 1;
+      long salt = restoreSalt;
+      if (salt == 0) {
+        return ThreadLocalRandom.current().nextLong(0, MAX_VALUE) + 1;
+      }
+      long id;
+      do {
+        id = (ThreadLocalRandom.current().nextLong() ^ salt) & MAX_VALUE;
+      } while (id == 0);
+      return id;
     }
   }
 

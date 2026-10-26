@@ -60,7 +60,13 @@ public class TelemetryRequestBody extends RequestBody {
     final String osVersion = HostInfo.getOsVersion();
   }
 
-  private static final CommonData commonData = new CommonData();
+  private static volatile CommonData commonData = new CommonData();
+
+  /** Re-reads env, version, runtime id and host, and restarts seq_id, e.g. after a CRaC restore. */
+  static void reloadCommonData() {
+    commonData = new CommonData();
+    SEQ_ID.set(0);
+  }
 
   TelemetryRequestBody(RequestType requestType) {
     this.requestType = requestType;

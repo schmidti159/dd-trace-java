@@ -20,12 +20,17 @@ public class HostInfo {
   private static final Path PROC_VERSION = FileSystems.getDefault().getPath("/proc/version");
   private static final Logger log = LoggerFactory.getLogger(TelemetryRequestBody.class);
 
-  private static String hostname;
+  private static volatile String hostname;
   private static String osName;
   private static String osVersion;
   private static String kernelRelease;
   private static String kernelVersion;
   private static String architecture;
+
+  /** Forgets the cached host name, e.g. after a CRaC restore into another container. */
+  static void resetHostname() {
+    hostname = null;
+  }
 
   public static String getHostname() {
     if (hostname != null) {

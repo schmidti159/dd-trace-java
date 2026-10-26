@@ -45,13 +45,14 @@ public class ContainerInfo {
       Pattern.compile(
           "(?:.+)?(" + UUID_REGEX + "|" + CONTAINER_REGEX + "|" + TASK_REGEX + ")(?:.scope)?$");
 
-  private static final ContainerInfo INSTANCE;
+  // Not final: a CRaC restore may run in another container, see reloadAfterRestore()
+  private static volatile ContainerInfo INSTANCE;
 
   private static final long PROC_CGROUP_INIT_INO = 0xEFFFFFFBL;
   private static final String CGROUPV1_BASE_CONTROLLER = "memory";
   private static final String CGROUPV2_BASE_CONTROLLER = "";
 
-  private static final String ENTITY_ID;
+  private static volatile String ENTITY_ID;
 
   @SuppressFBWarnings("PA_PUBLIC_PRIMITIVE_ATTRIBUTE")
   public String containerId;
@@ -98,6 +99,15 @@ public class ContainerInfo {
   }
 
   static {
+    load();
+  }
+
+  /** Re-reads the container and entity id after a CRaC restore. */
+  public static void reloadAfterRestore() {
+    load();
+  }
+
+  private static void load() {
     ContainerInfo containerInfo = new ContainerInfo();
     if (ContainerInfo.isRunningInContainer()) {
       try {

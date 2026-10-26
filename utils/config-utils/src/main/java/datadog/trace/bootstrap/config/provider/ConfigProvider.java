@@ -8,6 +8,7 @@ import datadog.environment.SystemProperties;
 import datadog.trace.api.ConfigCollector;
 import datadog.trace.api.ConfigOrigin;
 import datadog.trace.bootstrap.config.provider.civisibility.CiEnvironmentVariables;
+import datadog.trace.config.inversion.ConfigHelper;
 import datadog.trace.util.ConfigStrings;
 import de.thetaphi.forbiddenapis.SuppressForbidden;
 import java.io.File;
@@ -31,7 +32,8 @@ import org.slf4j.LoggerFactory;
 
 public final class ConfigProvider {
   private static final class Singleton {
-    private static final ConfigProvider INSTANCE = ConfigProvider.createDefault();
+    // Not final: replaced after a CRaC restore, see reloadAfterRestore()
+    private static volatile ConfigProvider INSTANCE = ConfigProvider.createDefault();
   }
 
   private static final Logger log = LoggerFactory.getLogger(ConfigProvider.class);
@@ -502,6 +504,12 @@ public final class ConfigProvider {
 
   public static ConfigProvider getInstance() {
     return Singleton.INSTANCE;
+  }
+
+  /** Re-reads every configuration source; the environment of a restored JVM is a new one. */
+  public static void reloadAfterRestore() {
+    ConfigHelper.get().resetCache();
+    Singleton.INSTANCE = ConfigProvider.createDefault();
   }
 
   public static ConfigProvider createDefault() {

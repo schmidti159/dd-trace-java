@@ -11,6 +11,7 @@ import datadog.remoteconfig.ConfigurationPoller;
 import datadog.remoteconfig.DefaultConfigurationPoller;
 import datadog.trace.api.Config;
 import datadog.trace.api.civisibility.config.BazelMode;
+import datadog.trace.api.crac.CracHooks;
 import datadog.trace.util.AgentTaskScheduler;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.security.Security;
@@ -174,8 +175,16 @@ public class SharedCommunicationObjects {
       createRemaining(config);
       configUrlSupplier = new RetryConfigUrlSupplier(this, config);
     }
-    return new DefaultConfigurationPoller(
-        config, TRACER_VERSION, containerId, entityId, configUrlSupplier, agentHttpClient);
+    DefaultConfigurationPoller poller =
+        new DefaultConfigurationPoller(
+            config, TRACER_VERSION, containerId, entityId, configUrlSupplier, agentHttpClient);
+    CracHooks.registerAfterRestore(
+        CracHooks.Phase.COMPONENT,
+        poller,
+        p ->
+            p.reloadIdentity(
+                Config.get(), ContainerInfo.get().getContainerId(), ContainerInfo.getEntityId()));
+    return poller;
   }
 
   // for testing

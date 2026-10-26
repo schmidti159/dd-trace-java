@@ -5,6 +5,7 @@ import datadog.trace.api.Config;
 import datadog.trace.api.ConfigCollector;
 import datadog.trace.api.ConfigOrigin;
 import datadog.trace.api.ConfigSetting;
+import datadog.trace.api.crac.CracHooks;
 import datadog.trace.api.time.SystemTimeSource;
 import datadog.trace.api.time.TimeSource;
 import java.util.List;
@@ -24,11 +25,20 @@ public class TelemetryRunnable implements Runnable {
   private final List<TelemetryPeriodicAction> actions;
   private final List<MetricPeriodicAction> actionsAtMetricsInterval;
   private final Scheduler scheduler;
-  private boolean startupEventSent;
+  private volatile boolean startupEventSent;
 
   public TelemetryRunnable(
       final TelemetryService telemetryService, final List<TelemetryPeriodicAction> actions) {
     this(telemetryService, actions, new ThreadSleeperImpl(), SystemTimeSource.INSTANCE);
+    // a restore is a new runtime-id and host: announce it with its own app-started event
+    CracHooks.registerAfterRestore(
+        CracHooks.Phase.COMPONENT,
+        this,
+        r -> {
+          HostInfo.resetHostname();
+          TelemetryRequestBody.reloadCommonData();
+          r.startupEventSent = false;
+        });
   }
 
   TelemetryRunnable(

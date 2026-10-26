@@ -12,6 +12,7 @@ import datadog.common.filesystem.Files;
 import datadog.environment.OperatingSystem;
 import datadog.logging.IOLogger;
 import datadog.trace.api.Config;
+import datadog.trace.api.crac.CracHooks;
 import datadog.trace.util.AgentTaskScheduler;
 import datadog.trace.util.AgentThreadFactory;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
@@ -38,6 +39,8 @@ final class DDAgentStatsDConnection implements StatsDClientErrorHandler {
   private volatile String host;
   private volatile Integer port;
   private final String namedPipe;
+  private final String configuredHost;
+  private final Integer configuredPort;
   private final boolean useAggregation;
 
   private final AtomicInteger clientCount = new AtomicInteger(0);
@@ -50,6 +53,8 @@ final class DDAgentStatsDConnection implements StatsDClientErrorHandler {
       final String host, final Integer port, final String namedPipe, boolean useAggregation) {
     this.host = host;
     this.port = port;
+    this.configuredHost = host;
+    this.configuredPort = port;
     this.namedPipe = namedPipe;
     this.useAggregation = useAggregation;
   }
@@ -71,6 +76,26 @@ final class DDAgentStatsDConnection implements StatsDClientErrorHandler {
     if (clientCount.decrementAndGet() == 0) {
       doClose();
     }
+  }
+
+  /** Closes the socket before a CRaC checkpoint; metrics recorded meanwhile are dropped. */
+  void beforeCheckpoint() {
+    synchronized (this) {
+      if (NO_OP != statsd) {
+        statsd.close();
+        statsd = NO_OP;
+      }
+    }
+  }
+
+  /** Reconnects after a CRaC restore, discovering the agent address again. */
+  void afterRestore() {
+    synchronized (this) {
+      host = configuredHost;
+      port = configuredPort;
+      retries.set(0);
+    }
+    doConnect();
   }
 
   public int getErrorCount() {
@@ -97,7 +122,8 @@ final class DDAgentStatsDConnection implements StatsDClientErrorHandler {
 
   private void doConnect() {
     synchronized (this) {
-      if (NO_OP == statsd && clientCount.get() > 0) {
+      // a scheduled connect must not reopen the socket the checkpoint hook closed
+      if (NO_OP == statsd && clientCount.get() > 0 && !CracHooks.isCheckpointing()) {
         discoverConnectionSettings();
         if (log.isDebugEnabled()) {
           log.debug("Creating StatsD client - {}", statsDAddress());

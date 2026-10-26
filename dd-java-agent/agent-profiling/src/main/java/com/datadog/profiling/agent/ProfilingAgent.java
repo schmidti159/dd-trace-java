@@ -24,6 +24,7 @@ import com.datadog.profiling.utils.Timestamper;
 import datadog.trace.api.Config;
 import datadog.trace.api.Platform;
 import datadog.trace.api.config.ProfilingConfig;
+import datadog.trace.api.crac.CracHooks;
 import datadog.trace.api.profiling.ProfilerFlareLogger;
 import datadog.trace.api.profiling.RecordingData;
 import datadog.trace.api.profiling.RecordingDataListener;
@@ -147,6 +148,29 @@ public class ProfilingAgent {
         DataDumper dumper = dumpPath != null ? new DataDumper(Paths.get(dumpPath)) : null;
 
         uploader = new ProfileUploader(config, configProvider);
+        CracHooks.register(
+            CracHooks.Phase.COMPONENT,
+            new CracHooks.Hook() {
+              @Override
+              public void beforeCheckpoint() {
+                ProfilingSystem system = profiler;
+                if (system != null) {
+                  system.beforeCheckpoint();
+                }
+              }
+
+              @Override
+              public void afterRestore() throws Exception {
+                ProfileUploader current = uploader;
+                if (current != null) {
+                  current.relabel(Config.get());
+                }
+                ProfilingSystem system = profiler;
+                if (system != null) {
+                  system.afterRestore();
+                }
+              }
+            });
 
         RecordingDataListener listener = uploader::upload;
         if (dumper != null) {

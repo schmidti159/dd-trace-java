@@ -5,6 +5,7 @@ import datadog.environment.OperatingSystem;
 import datadog.trace.api.Config;
 import datadog.trace.api.GlobalTracer;
 import datadog.trace.api.Platform;
+import datadog.trace.api.crac.CracHooks;
 import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import datadog.trace.bootstrap.instrumentation.api.ProfilingContextIntegration;
 import datadog.trace.core.CoreTracer;
@@ -39,6 +40,19 @@ public class TracerInstaller {
                 .serviceDiscoveryFactory(serviceDiscoveryFactory())
                 .build();
         installGlobalTracer(tracer);
+        CracHooks.register(
+            CracHooks.Phase.COMPONENT,
+            new CracHooks.Hook() {
+              @Override
+              public void beforeCheckpoint() {
+                tracer.beforeCheckpoint();
+              }
+
+              @Override
+              public void afterRestore() {
+                tracer.afterRestore(Config.get());
+              }
+            });
       } else {
         log.debug("GlobalTracer already registered.");
       }

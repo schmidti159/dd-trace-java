@@ -9,9 +9,11 @@ import datadog.common.socket.NamedPipeSocketFactory;
 import datadog.common.socket.UnixDomainSocketFactory;
 import datadog.environment.SystemProperties;
 import datadog.trace.api.Config;
+import datadog.trace.api.crac.CracHooks;
 import datadog.trace.util.AgentProxySelector;
 import java.io.File;
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.nio.ByteBuffer;
@@ -19,6 +21,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import javax.annotation.Nullable;
 import okhttp3.Call;
 import okhttp3.ConnectionPool;
@@ -41,6 +44,35 @@ import org.slf4j.LoggerFactory;
 
 public final class OkHttpUtils {
   private static final Logger log = LoggerFactory.getLogger(OkHttpUtils.class);
+
+  /** Clients built here; their pooled connections are closed before a CRaC checkpoint. */
+  private static final List<WeakReference<OkHttpClient>> CLIENTS = new CopyOnWriteArrayList<>();
+
+  static {
+    CracHooks.register(
+        CracHooks.Phase.IDENTITY,
+        new CracHooks.Hook() {
+          @Override
+          public void beforeCheckpoint() {
+            for (WeakReference<OkHttpClient> ref : CLIENTS) {
+              OkHttpClient client = ref.get();
+              if (client == null) {
+                CLIENTS.remove(ref);
+              } else {
+                // in-flight calls keep their socket open; the traces were flushed already
+                client.dispatcher().cancelAll();
+                client.connectionPool().evictAll();
+              }
+            }
+          }
+
+          @Override
+          public void afterRestore() {
+            // read by prepareRequest() for the container and entity id headers
+            ContainerInfo.reloadAfterRestore();
+          }
+        });
+  }
 
   private static final String DATADOG_META_LANG = "Datadog-Meta-Lang";
   private static final String DATADOG_META_LANG_VERSION = "Datadog-Meta-Lang-Version";
@@ -227,7 +259,17 @@ public final class OkHttpUtils {
       }
     }
 
+    // refuse new calls between the connection eviction and the checkpoint
+    builder.addInterceptor(
+        chain -> {
+          if (CracHooks.isCheckpointing()) {
+            throw new IOException("CRaC checkpoint in progress");
+          }
+          return chain.proceed(chain.request());
+        });
+
     OkHttpClient client = builder.build();
+    CLIENTS.add(new WeakReference<>(client));
 
     if (maxRunningRequests != null) {
       client.dispatcher().setMaxRequests(maxRunningRequests);

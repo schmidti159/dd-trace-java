@@ -7,10 +7,12 @@ import datadog.communication.serialization.GrowableBuffer;
 import datadog.communication.serialization.WritableFormatter;
 import datadog.communication.serialization.msgpack.MsgPackWriter;
 import datadog.metrics.api.Histogram;
+import datadog.trace.api.Config;
 import datadog.trace.api.ProcessTags;
 import datadog.trace.api.WellKnownTags;
 import datadog.trace.api.cache.DDCache;
 import datadog.trace.api.cache.DDCaches;
+import datadog.trace.api.crac.CracHooks;
 import datadog.trace.api.git.GitInfo;
 import datadog.trace.api.git.GitInfoProvider;
 import datadog.trace.bootstrap.instrumentation.api.UTF8BytesString;
@@ -60,7 +62,7 @@ public final class SerializingMetricWriter implements MetricWriter {
               ? UTF8BytesString.create(gitInfo.getCommit().getSha())
               : EMPTY;
 
-  private final WellKnownTags wellKnownTags;
+  private volatile WellKnownTags wellKnownTags;
   private final WritableFormatter writer;
   private final Sink sink;
 
@@ -113,6 +115,8 @@ public final class SerializingMetricWriter implements MetricWriter {
       final GitInfoProvider gitInfoProvider,
       boolean additionalTagsConfigured) {
     this.wellKnownTags = wellKnownTags;
+    CracHooks.registerAfterRestore(
+        CracHooks.Phase.COMPONENT, this, w -> w.wellKnownTags = Config.get().getWellKnownTags());
     this.buffer = new GrowableBuffer(initialCapacity);
     this.writer = new MsgPackWriter(buffer);
     this.sink = sink;

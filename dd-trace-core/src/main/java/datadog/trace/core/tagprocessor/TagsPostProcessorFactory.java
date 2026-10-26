@@ -87,4 +87,10 @@ public final class TagsPostProcessorFactory {
     withAddInternalTags(true);
     withAddRemoteHostname(true);
   }
+
+  /** Rebuilds the chains from the current {@link Config}, e.g. after a CRaC restore. */
+  public static void rebuild() {
+    Lazy.eagerProcessor = Lazy.createEagerChain();
+    Lazy.lazyProcessor = Lazy.createLazyChain();
+  }
 }

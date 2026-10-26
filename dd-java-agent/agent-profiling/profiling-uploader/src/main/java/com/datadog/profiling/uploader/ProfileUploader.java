@@ -127,7 +127,8 @@ public final class ProfileUploader {
   private final int terminationTimeout;
   private final CompressionType compressionType;
 
-  private final RecordingDataAdapter jsonAdapter;
+  // Not final: relabelled after a CRaC restore, see relabel()
+  private volatile RecordingDataAdapter jsonAdapter;
 
   private final Duration uploadTimeout;
 
@@ -151,39 +152,7 @@ public final class ProfileUploader {
     summaryOn413 = config.isProfilingUploadSummaryOn413Enabled();
 
     log.debug("Started ProfileUploader with target url {}", url);
-    /*
-    FIXME: currently `Config` class cannot get access to some pieces of information we need here:
-    * PID (see PidHelper for details),
-    * Profiler version
-    Since Config returns unmodifiable map we have to do copy here.
-    Ideally we should improve this logic and avoid copy, but performance impact is very limited
-    since we are doing this once on startup only.
-    */
-    final Map<String, String> tagsMap = new HashMap<>(config.getMergedProfilingTags());
-    tagsMap.put(VersionInfo.PROFILER_VERSION_TAG, VersionInfo.VERSION);
-    tagsMap.put(VersionInfo.LIBRARY_VERSION_TAG, VersionInfo.VERSION);
-    // PID can be empty if we cannot find it out from the system
-    if (!PidHelper.getPid().isEmpty()) {
-      tagsMap.put(DDTags.PID_TAG, PidHelper.getPid());
-    }
-
-    if (config.isTraceGitMetadataEnabled()) {
-      GitInfo gitInfo = GitInfoProvider.INSTANCE.getGitInfo();
-      tagsMap.put(Tags.GIT_REPOSITORY_URL, gitInfo.getRepositoryURL());
-      tagsMap.put(Tags.GIT_COMMIT_SHA, gitInfo.getCommit().getSha());
-    }
-    if (Platform.isNativeImage()) {
-      tagsMap.put(DDTags.RUNTIME_VERSION_TAG, tagsMap.get(DDTags.RUNTIME_VERSION_TAG) + "-aot");
-    }
-    if (ServerlessInfo.get().isRunningInServerlessEnvironment()) {
-      tagsMap.put(SERVELESS_TAG, ServerlessInfo.get().getFunctionName());
-    }
-
-    // Comma separated tags string for V2.4 format
-    Pattern quotes = Pattern.compile("\"");
-    jsonAdapter =
-        new RecordingDataAdapter(
-            quotes.matcher(String.join(",", tagsToList(tagsMap))).replaceAll(""));
+    jsonAdapter = new RecordingDataAdapter(buildTags(config));
     uploadTimeout = Duration.ofSeconds(config.getProfilingUploadTimeout());
 
     // This is the same thing OkHttp Dispatcher is doing except thread naming and daemonization
@@ -432,6 +401,45 @@ public final class ProfileUploader {
 
   private boolean canEnqueueMoreRequests() {
     return client.dispatcher().queuedCallsCount() < MAX_ENQUEUED_REQUESTS;
+  }
+
+  /** Rebuilds the profile tags (env, version, host, runtime id, PID) after a CRaC restore. */
+  public void relabel(final Config config) {
+    jsonAdapter = new RecordingDataAdapter(buildTags(config));
+  }
+
+  private String buildTags(final Config config) {
+    /*
+    FIXME: currently `Config` class cannot get access to some pieces of information we need here:
+    * PID (see PidHelper for details),
+    * Profiler version
+    Since Config returns unmodifiable map we have to do copy here.
+    Ideally we should improve this logic and avoid copy, but performance impact is very limited
+    since we are doing this once on startup only.
+    */
+    final Map<String, String> tagsMap = new HashMap<>(config.getMergedProfilingTags());
+    tagsMap.put(VersionInfo.PROFILER_VERSION_TAG, VersionInfo.VERSION);
+    tagsMap.put(VersionInfo.LIBRARY_VERSION_TAG, VersionInfo.VERSION);
+    // PID can be empty if we cannot find it out from the system
+    if (!PidHelper.getPid().isEmpty()) {
+      tagsMap.put(DDTags.PID_TAG, PidHelper.getPid());
+    }
+
+    if (config.isTraceGitMetadataEnabled()) {
+      GitInfo gitInfo = GitInfoProvider.INSTANCE.getGitInfo();
+      tagsMap.put(Tags.GIT_REPOSITORY_URL, gitInfo.getRepositoryURL());
+      tagsMap.put(Tags.GIT_COMMIT_SHA, gitInfo.getCommit().getSha());
+    }
+    if (Platform.isNativeImage()) {
+      tagsMap.put(DDTags.RUNTIME_VERSION_TAG, tagsMap.get(DDTags.RUNTIME_VERSION_TAG) + "-aot");
+    }
+    if (ServerlessInfo.get().isRunningInServerlessEnvironment()) {
+      tagsMap.put(SERVELESS_TAG, ServerlessInfo.get().getFunctionName());
+    }
+
+    // Comma separated tags string for V2.4 format
+    Pattern quotes = Pattern.compile("\"");
+    return quotes.matcher(String.join(",", tagsToList(tagsMap))).replaceAll("");
   }
 
   private List<String> tagsToList(final Map<String, String> tags) {

@@ -233,6 +233,10 @@ public class Agent {
 
     createAgentClassloader(agentJarURL);
 
+    if (!Platform.isNativeImageBuilder()) {
+      CracResource.register();
+    }
+
     AgentTracer.maybeInstallLegacyContextManager();
 
     if (Platform.isNativeImageBuilder()) {

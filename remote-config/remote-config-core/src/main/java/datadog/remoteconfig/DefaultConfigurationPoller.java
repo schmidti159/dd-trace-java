@@ -63,10 +63,11 @@ public class DefaultConfigurationPoller
 
   private final String keyId;
   private final Ed25519PublicKey key;
-  private final Config config;
+  private volatile Config config;
   private final String tracerVersion;
-  private final String containerId;
-  private final String entityId;
+  private volatile String containerId;
+  private volatile String entityId;
+  private volatile boolean identityChanged;
   private final OkHttpClient httpClient;
   private final RatelimitedLogger ratelimitedLogger;
   private final Supplier<String> urlSupplier;
@@ -254,15 +255,27 @@ public class DefaultConfigurationPoller
     }
   }
 
+  /**
+   * Takes a new process identity, e.g. after a CRaC restore. The poller thread rebuilds its request
+   * factory, with a new client id, before the next poll.
+   */
+  public void reloadIdentity(Config config, String containerId, String entityId) {
+    this.config = config;
+    this.containerId = containerId;
+    this.entityId = entityId;
+    this.identityChanged = true;
+  }
+
   /** Tries to initialize remote config, and returns true if it is ready to run. */
   private boolean initialize() {
     if (fatalOnInitialization) {
       return false;
     }
 
-    if (requestFactory != null && responseFactory != null) {
+    if (requestFactory != null && responseFactory != null && !identityChanged) {
       return true;
     }
+    identityChanged = false;
 
     final String url = urlSupplier.get();
     if (url == null) {

@@ -11,7 +11,7 @@ public final class DDAgentStatsDClient implements StatsDClient {
   private static final Logger log = LoggerFactory.getLogger(DDAgentStatsDClient.class);
   private final DDAgentStatsDConnection connection;
   private final Function<String, String> nameMapping;
-  private final Function<String[], String[]> tagMapping;
+  private volatile Function<String[], String[]> tagMapping;
 
   DDAgentStatsDClient(
       final DDAgentStatsDConnection connection,
@@ -22,6 +22,11 @@ public final class DDAgentStatsDClient implements StatsDClient {
     this.tagMapping = tagMapping;
 
     connection.acquire();
+  }
+
+  /** Replaces the constant tags, e.g. with the new env and version after a CRaC restore. */
+  public void replaceConstantTags(final String[] constantTags) {
+    this.tagMapping = DDAgentStatsDClientManager.tagMapping(constantTags);
   }
 
   @Override

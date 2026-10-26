@@ -25,9 +25,10 @@ import org.slf4j.LoggerFactory;
 public final class PidHelper {
   private static final Logger log = LoggerFactory.getLogger(PidHelper.class);
 
-  private static final String PID = findPid();
+  // Not final: a CRaC restore runs in a new process, see reloadAfterRestore()
+  private static volatile String PID = findPid();
 
-  private static final long PID_AS_LONG = parsePid();
+  private static volatile long PID_AS_LONG = parsePid();
 
   public static String getPid() {
     return PID;
@@ -36,6 +37,23 @@ public final class PidHelper {
   /** Returns 0 if the PID is not a number. */
   public static long getPidAsLong() {
     return PID_AS_LONG;
+  }
+
+  /**
+   * Re-reads the PID after a CRaC restore. {@code ProcessHandle.current()} caches the PID of the
+   * checkpointed process, so on Linux the {@code /proc/self} link is read instead.
+   */
+  public static void reloadAfterRestore() {
+    String pid = "";
+    if (OperatingSystem.isLinux()) {
+      try {
+        pid = Files.readSymbolicLink(Paths.get("/proc/self")).toString().trim();
+      } catch (Throwable e) {
+        log.debug("Cannot read /proc/self", e);
+      }
+    }
+    PID = pid.isEmpty() ? findPid() : pid;
+    PID_AS_LONG = parsePid();
   }
 
   @SuppressWarnings("unchecked")

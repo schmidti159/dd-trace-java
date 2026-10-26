@@ -7,9 +7,11 @@ import datadog.metrics.agent.AgentMeter;
 import datadog.metrics.api.Monitoring;
 import datadog.metrics.api.statsd.StatsDClient;
 import datadog.metrics.impl.DDSketchHistograms;
+import datadog.metrics.impl.statsd.DDAgentStatsDClient;
 import datadog.metrics.impl.MonitoringImpl;
 import datadog.trace.api.Config;
 import datadog.trace.api.config.GeneralConfig;
+import datadog.trace.api.crac.CracHooks;
 import datadog.trace.core.DDTraceCoreInfo;
 import java.util.ArrayList;
 import java.util.List;
@@ -30,6 +32,12 @@ public class MeterInstaller {
             ? new MonitoringImpl(statsDClient, 10, SECONDS)
             : MonitoringImpl.DISABLED;
     AgentMeter.registerIfAbsent(statsDClient, monitoring, DDSketchHistograms.FACTORY);
+    if (statsDClient instanceof DDAgentStatsDClient) {
+      CracHooks.registerAfterRestore(
+          CracHooks.Phase.COMPONENT,
+          (DDAgentStatsDClient) statsDClient,
+          c -> c.replaceConstantTags(generateConstantTags(Config.get())));
+    }
   }
 
   private static StatsDClient createStatsDClient(Config config) {

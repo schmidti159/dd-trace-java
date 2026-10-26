@@ -58,6 +58,8 @@ public final class ProfilingSystem {
   private OngoingRecording recording;
   private SnapshotRecording snapshotRecording;
   private volatile boolean started = false;
+  /** Set while the recording is stopped for a CRaC checkpoint. */
+  private volatile boolean pausedForCheckpoint = false;
 
   /**
    * Constructor.
@@ -235,6 +237,41 @@ public final class ProfilingSystem {
     started = false;
   }
 
+  /**
+   * Stops the recording before a CRaC checkpoint: an open recording file blocks the checkpoint. The
+   * data since the last upload is uploaded synchronously first; the periodic snapshot task keeps
+   * running and skips while paused.
+   */
+  public synchronized void beforeCheckpoint() {
+    if (!started || recording == null) {
+      return;
+    }
+    if (snapshotRecording != null) {
+      snapshotRecording.snapshotLocked(ProfilingSnapshot.Kind.PERIODIC, true);
+    }
+    pausedForCheckpoint = true;
+    // close() only deletes the file; stop() ends the native profiler that holds it open
+    RecordingData data = recording.stop();
+    if (data != null) {
+      data.release();
+    }
+    recording.close();
+    recording = null;
+  }
+
+  /** Starts a new recording after a CRaC restore. */
+  public synchronized void afterRestore() throws UnsupportedEnvironmentException {
+    if (!pausedForCheckpoint) {
+      return;
+    }
+    final Instant now = Instant.now();
+    recording = controller.createRecording(RECORDING_NAME, context);
+    if (snapshotRecording != null) {
+      snapshotRecording.lastSnapshot = now;
+    }
+    pausedForCheckpoint = false;
+  }
+
   public boolean isStarted() {
     return started;
   }
@@ -263,13 +300,26 @@ public final class ProfilingSystem {
     }
 
     public void snapshot(boolean onShutdown) {
+      synchronized (ProfilingSystem.this) {
+        if (pausedForCheckpoint) {
+          return;
+        }
+        snapshotLocked(onShutdown);
+      }
+    }
+
+    private void snapshotLocked(boolean onShutdown) {
+      snapshotLocked(
+          onShutdown ? ProfilingSnapshot.Kind.ON_SHUTDOWN : ProfilingSnapshot.Kind.PERIODIC,
+          onShutdown);
+    }
+
+    private void snapshotLocked(ProfilingSnapshot.Kind kind, boolean sync) {
       final RecordingType recordingType = RecordingType.CONTINUOUS;
       try {
         log.debug("Creating profiler snapshot");
         final RecordingData recordingData =
-            recording.snapshot(
-                lastSnapshot,
-                onShutdown ? ProfilingSnapshot.Kind.ON_SHUTDOWN : ProfilingSnapshot.Kind.PERIODIC);
+            recording.snapshot(lastSnapshot, kind);
         log.debug("Snapshot created: {}", recordingData);
         if (recordingData != null) {
           // To make sure that we don't get data twice, we say that the next start should be
@@ -277,7 +327,7 @@ public final class ProfilingSystem {
           // JFR is filtering the stream it will only discard earlier chunks that have an end
           // time that is before (not before or equal to) the requested start time of the filter.
           lastSnapshot = recordingData.getEnd().plus(ONE_NANO);
-          dataListener.onNewData(recordingType, recordingData, onShutdown);
+          dataListener.onNewData(recordingType, recordingData, sync);
         } else {
           lastSnapshot = Instant.now();
         }

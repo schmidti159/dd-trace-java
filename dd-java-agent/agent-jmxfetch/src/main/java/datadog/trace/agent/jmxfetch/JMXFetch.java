@@ -10,6 +10,7 @@ import datadog.metrics.api.statsd.StatsDClientManager;
 import datadog.trace.api.Config;
 import datadog.trace.api.GlobalTracer;
 import datadog.trace.api.InstrumenterConfig;
+import datadog.trace.api.crac.CracHooks;
 import datadog.trace.api.flare.TracerFlare;
 import datadog.trace.api.telemetry.LogCollector;
 import de.thetaphi.forbiddenapis.SuppressForbidden;
@@ -23,6 +24,7 @@ import java.util.Map;
 import java.util.Scanner;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import org.datadog.jmxfetch.App;
 import org.datadog.jmxfetch.AppConfig;
 import org.slf4j.Logger;
@@ -37,6 +39,11 @@ public class JMXFetch {
   private static final String WEBSPHERE_CONFIG = "jmxfetch-websphere-config.yaml";
 
   private static final int DELAY_BETWEEN_RUN_ATTEMPTS = 5000;
+
+  /** The global tags the collector reads when it (re)creates its instances. */
+  private static volatile Map<String, String> globalTags;
+
+  private static volatile App app;
 
   public static void run(final StatsDClientManager statsDClientManager) {
     run(statsDClientManager, Config.get());
@@ -62,7 +69,20 @@ public class JMXFetch {
     final Integer checkPeriod = config.getJmxFetchCheckPeriod();
     final Integer refreshBeansPeriod = config.getJmxFetchRefreshBeansPeriod();
     final Integer initialRefreshBeansPeriod = config.getJmxFetchInitialRefreshBeansPeriod();
-    final Map<String, String> globalTags = config.getMergedJmxTags();
+    final Map<String, String> globalTags = new ConcurrentHashMap<>();
+    putTags(globalTags, config.getMergedJmxTags());
+    JMXFetch.globalTags = globalTags;
+    CracHooks.register(
+        CracHooks.Phase.COMPONENT,
+        new CracHooks.Hook() {
+          @Override
+          public void beforeCheckpoint() {}
+
+          @Override
+          public void afterRestore() {
+            refreshTags(Config.get());
+          }
+        });
 
     String host = config.getJmxFetchStatsdHost();
     Integer port = config.getJmxFetchStatsdPort();
@@ -154,6 +174,7 @@ public class JMXFetch {
               @Override
               public void run() {
                 App app = new App(appConfig);
+                JMXFetch.app = app;
                 while (true) {
                   // check in case dynamic-config has temporarily disabled JMXFetch
                   if (!appConfig.getExitWatcher().shouldExit()) {
@@ -183,6 +204,29 @@ public class JMXFetch {
             });
     thread.setContextClassLoader(JMXFetch.class.getClassLoader());
     thread.start();
+  }
+
+  /** Replaces the global tags, e.g. after a CRaC restore, and makes the collector use them. */
+  static void refreshTags(Config config) {
+    Map<String, String> tags = globalTags;
+    if (tags == null) {
+      return;
+    }
+    Map<String, String> fresh = config.getMergedJmxTags();
+    tags.keySet().retainAll(fresh.keySet());
+    putTags(tags, fresh);
+    App current = app;
+    if (current != null) {
+      current.setReinit(true);
+    }
+  }
+
+  private static void putTags(Map<String, String> target, Map<String, String> source) {
+    for (Map.Entry<String, String> entry : source.entrySet()) {
+      if (entry.getKey() != null && entry.getValue() != null) {
+        target.put(entry.getKey(), entry.getValue());
+      }
+    }
   }
 
   @SuppressForbidden
